@@ -1,0 +1,8 @@
+# Compiled C# files
+bin/
+obj/
+*.user
+
+# Local tool logs (to avoid accidentally pushing other people's data)
+migration_log.txt
+BookmarksBackup/
