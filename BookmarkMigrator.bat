@@ -166,6 +166,11 @@ try {
             $brush = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#B7F397")
             $DeMessageText.Foreground = $brush
             $EnMessageText.Foreground = $brush
+        } elseif ($state -eq "InProgress") {
+            $MessageContainer.Background = [System.Windows.Media.Brushes]::Transparent
+            $brush = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#A8C7FA")
+            $DeMessageText.Foreground = $brush
+            $EnMessageText.Foreground = $brush
         } else {
             $MessageContainer.Background = [System.Windows.Media.Brushes]::Transparent
             $DeMessageText.Foreground = [System.Windows.Media.BrushConverter]::new().ConvertFromString("#E6E1E5")
@@ -249,18 +254,30 @@ try {
         $localAppData = [Environment]::GetFolderPath("LocalApplicationData")
         $chromeUserData = Join-Path $localAppData "Google\Chrome\User Data"
         
+        udf_WriteLog "INFO" "Scanning for Chrome profiles in: $chromeUserData"
+        
         if (Test-Path $chromeUserData) {
             $dirs = Get-ChildItem -Path $chromeUserData -Directory
             foreach ($dir in $dirs) {
+                udf_WriteLog "INFO" "Checking directory: $($dir.Name)"
                 # Exclude system folders that do not contain valid user bookmarks
                 if ($dir.Name -ne "System Profile" -and $dir.Name -ne "Guest Profile") {
-                    if (Test-Path (Join-Path $dir.FullName $BookmarksFileName)) {
+                    $bookmarksPath = Join-Path $dir.FullName $BookmarksFileName
+                    if (Test-Path $bookmarksPath) {
                         $profiles += $dir.FullName
-                        udf_WriteLog "INFO" "Found Chrome profile: $($dir.Name)"
+                        udf_WriteLog "INFO" "Found valid Chrome profile with Bookmarks: $($dir.Name)"
+                    } else {
+                        udf_WriteLog "INFO" "Skipped: No Bookmarks file in $($dir.Name)"
                     }
+                } else {
+                    udf_WriteLog "INFO" "Skipped system directory: $($dir.Name)"
                 }
             }
+        } else {
+            udf_WriteLog "WARN" "Chrome User Data directory not found at $chromeUserData"
         }
+        
+        udf_WriteLog "INFO" "Total valid Chrome profiles identified: $($profiles.Count)"
         return $profiles
     }
 
@@ -318,6 +335,15 @@ try {
         }
     }
 
+    function udf_CountBookmarks {
+        param($node, [ref]$count)
+        if ($null -eq $node) { return }
+        if ($node.type -eq "url") { $count.Value++ }
+        if ($node.type -eq "folder" -and $node.children) {
+            foreach ($child in $node.children) { udf_CountBookmarks $child $count }
+        }
+    }
+
     function udf_MergeBookmarks {
         param($chromeProfiles, $edgeProfile)
         udf_WriteLog "INFO" "Starting bookmark merge process..."
@@ -333,41 +359,68 @@ try {
         }
 
         $idCounter = $InitialIdCounter
+        $successfulMerges = 0
+        $failedMerges = 0
 
         foreach ($chromePath in $chromeProfiles) {
-            $chromeFile = Join-Path $chromePath $BookmarksFileName
-            $chromeJson = Get-Content $chromeFile -Raw | ConvertFrom-Json
-            $profileName = Split-Path $chromePath -Leaf
-            
-            # Create container folder
-            $profileFolder = [PSCustomObject]@{
-                date_added    = ([string][long]([DateTime]::UtcNow.ToFileTimeUtc() / 10))
-                date_modified = ([string][long]([DateTime]::UtcNow.ToFileTimeUtc() / 10))
-                guid          = [Guid]::NewGuid().ToString()
-                id            = "0"
-                name          = "$ChromeImportPrefix$profileName"
-                type          = "folder"
-                children      = @()
-            }
-
-            # Extract roots
-            $roots = $chromeJson.roots
-            if ($roots) {
-                $keys = @("bookmark_bar", "other", "synced")
-                foreach ($key in $keys) {
-                    if ($roots.$key.children) {
-                        $profileFolder.children += $roots.$key.children
+            try {
+                $profileName = Split-Path $chromePath -Leaf
+                udf_WriteLog "INFO" "Processing profile: $profileName"
+                
+                $chromeFile = Join-Path $chromePath $BookmarksFileName
+                $chromeJson = Get-Content $chromeFile -Raw | ConvertFrom-Json
+                
+                # Count bookmarks for logging
+                $bCount = 0
+                if ($chromeJson.roots) {
+                    $keys = @("bookmark_bar", "other", "synced")
+                    foreach ($key in $keys) {
+                        if ($chromeJson.roots.$key) { udf_CountBookmarks $chromeJson.roots.$key ([ref]$bCount) }
                     }
                 }
-            }
+                udf_WriteLog "INFO" "Parsed $bCount bookmarks from $profileName"
+                
+                # Create container folder
+                $profileFolder = [PSCustomObject]@{
+                    date_added    = ([string][long]([DateTime]::UtcNow.ToFileTimeUtc() / 10))
+                    date_modified = ([string][long]([DateTime]::UtcNow.ToFileTimeUtc() / 10))
+                    guid          = [Guid]::NewGuid().ToString()
+                    id            = "0"
+                    name          = "$ChromeImportPrefix$profileName"
+                    type          = "folder"
+                    children      = @()
+                }
 
-            udf_ResetBookmarkMetadata $profileFolder ([ref]$idCounter)
-            
-            # Prepend to Edge Bookmark Bar
-            if ($null -eq $edgeJson.roots.bookmark_bar.children) {
-                $edgeJson.roots.bookmark_bar | Add-Member -MemberType NoteProperty -Name "children" -Value @() -Force
+                # Extract roots
+                $roots = $chromeJson.roots
+                if ($roots) {
+                    $keys = @("bookmark_bar", "other", "synced")
+                    foreach ($key in $keys) {
+                        if ($roots.$key.children) {
+                            $profileFolder.children += $roots.$key.children
+                        }
+                    }
+                }
+
+                udf_ResetBookmarkMetadata $profileFolder ([ref]$idCounter)
+                
+                # Prepend to Edge Bookmark Bar
+                if ($null -eq $edgeJson.roots.bookmark_bar.children) {
+                    $edgeJson.roots.bookmark_bar | Add-Member -MemberType NoteProperty -Name "children" -Value @() -Force
+                }
+                $edgeJson.roots.bookmark_bar.children = @($profileFolder) + $edgeJson.roots.bookmark_bar.children
+                
+                $successfulMerges++
+                udf_WriteLog "INFO" "Successfully merged profile: $profileName"
+            } catch {
+                $failedMerges++
+                udf_WriteLog "ERROR" "Failed to merge profile '$($chromePath)': $($_.Exception.Message)"
             }
-            $edgeJson.roots.bookmark_bar.children = @($profileFolder) + $edgeJson.roots.bookmark_bar.children
+        }
+        
+        udf_WriteLog "INFO" "Migration summary: $successfulMerges successful, $failedMerges failed."
+        if ($successfulMerges -eq 0 -and $chromeProfiles.Count -gt 0) {
+            throw "All Chrome profiles failed to merge. Check migration logs for details."
         }
 
         # Update Timestamps
@@ -419,19 +472,59 @@ try {
 
     $BtnCloseBrowsers.Add_Click({
         $BtnCloseBrowsers.IsEnabled = $false
-        $DeMessageText.Text = "Browser werden geschlossen..."
-        $EnMessageText.Text = "Closing browsers..."
-        udf_SetMessageState "Normal"
+        $DeMessageText.Text = "Browser werden geschlossen (dies kann einen Moment dauern)..."
+        $EnMessageText.Text = "Closing browsers (this may take a moment)..."
+        udf_SetMessageState "InProgress"
         [System.Windows.Forms.Application]::DoEvents()
 
-        Get-Process msedge, chrome -ErrorAction SilentlyContinue | ForEach-Object { 
-            $_.CloseMainWindow() | Out-Null 
-        } 
-        Start-Sleep -Seconds 2
-        Get-Process msedge, chrome -ErrorAction SilentlyContinue | Stop-Process -Force
-        
-        Start-Sleep -Milliseconds 1500
-        udf_CheckBrowserProcesses
+        $maxRetries = 3
+        $retryCount = 0
+        $browsersClosed = $false
+
+        while ($retryCount -lt $maxRetries -and -not $browsersClosed) {
+            $chrome = Get-Process chrome -ErrorAction SilentlyContinue
+            $edge = Get-Process msedge -ErrorAction SilentlyContinue
+            
+            if (-not $chrome -and -not $edge) {
+                $browsersClosed = $true
+                break
+            }
+
+            Get-Process msedge, chrome -ErrorAction SilentlyContinue | ForEach-Object { 
+                $_.CloseMainWindow() | Out-Null 
+            } 
+            
+            $sleepCount = 0
+            while ($sleepCount -lt 4 -and ($chrome -or $edge)) {
+                Start-Sleep -Milliseconds 500
+                [System.Windows.Forms.Application]::DoEvents()
+                $chrome = Get-Process chrome -ErrorAction SilentlyContinue
+                $edge = Get-Process msedge -ErrorAction SilentlyContinue
+                if (-not $chrome -and -not $edge) { $browsersClosed = $true; break }
+                $sleepCount++
+            }
+            
+            if (-not $browsersClosed) {
+                Get-Process msedge, chrome -ErrorAction SilentlyContinue | Stop-Process -Force
+                Start-Sleep -Seconds 1
+            }
+            
+            $chrome = Get-Process chrome -ErrorAction SilentlyContinue
+            $edge = Get-Process msedge -ErrorAction SilentlyContinue
+            if (-not $chrome -and -not $edge) { $browsersClosed = $true }
+            
+            $retryCount++
+        }
+
+        if ($browsersClosed) {
+            udf_CheckBrowserProcesses
+        } else {
+            $DeMessageText.Text = "Browser konnten nicht geschlossen werden. Bitte schliessen Sie diese manuell."
+            $EnMessageText.Text = "Could not close browsers. Please close them manually."
+            udf_SetMessageState "Error"
+            $BtnCloseBrowsers.IsEnabled = $true
+            udf_WriteLog "ERROR" "Failed to close browsers after $maxRetries retries."
+        }
     })
 
     $BtnStartMigration.Add_Click({
@@ -439,7 +532,7 @@ try {
         $BtnCloseBrowsers.Visibility = "Collapsed"
         $DeMessageText.Text = "Lesezeichen werden migriert..."
         $EnMessageText.Text = "Migrating bookmarks..."
-        udf_SetMessageState "Normal"
+        udf_SetMessageState "InProgress"
         udf_UpdateStepper 2
         [System.Windows.Forms.Application]::DoEvents()
 
