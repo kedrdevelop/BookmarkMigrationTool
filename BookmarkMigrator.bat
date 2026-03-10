@@ -123,7 +123,7 @@ try {
     $BtnCloseApp = $window.FindName("BtnCloseApp")
 
     # --- Constants & State ---
-    $LogFileName = "migration_log.txt"
+    $LogFileName = Join-Path $env:TEMP "migration_log.txt"
     $BackupRootFolderName = "BookmarksBackup"
     $ChromeFolderName = "Chrome"
     $EdgeFolderName = "Edge"
@@ -382,7 +382,8 @@ try {
         }
 
         $mergedJsonString = $edgeJson | ConvertTo-Json -Depth 100 -Compress
-        [System.IO.File]::WriteAllText($edgeFile, $mergedJsonString, [System.Text.Encoding]::UTF8)
+        $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+        [System.IO.File]::WriteAllText($edgeFile, $mergedJsonString, $utf8NoBom)
         udf_WriteLog "INFO" "Merged bookmarks saved to Edge profile."
     }
 
@@ -415,8 +416,11 @@ try {
         udf_SetMessageState "Normal"
         [System.Windows.Forms.Application]::DoEvents()
 
-        Get-Process chrome -ErrorAction SilentlyContinue | ForEach-Object { try { $_ | Stop-Process -Force -ErrorAction Stop } catch {} }
-        Get-Process msedge -ErrorAction SilentlyContinue | ForEach-Object { try { $_ | Stop-Process -Force -ErrorAction Stop } catch {} }
+        Get-Process msedge, chrome -ErrorAction SilentlyContinue | ForEach-Object { 
+            $_.CloseMainWindow() | Out-Null 
+        } 
+        Start-Sleep -Seconds 2
+        Get-Process msedge, chrome -ErrorAction SilentlyContinue | Stop-Process -Force
         
         Start-Sleep -Milliseconds 1500
         udf_CheckBrowserProcesses
