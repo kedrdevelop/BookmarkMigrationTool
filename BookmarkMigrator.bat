@@ -251,7 +251,8 @@ try {
         if (Test-Path $chromeUserData) {
             $dirs = Get-ChildItem -Path $chromeUserData -Directory
             foreach ($dir in $dirs) {
-                if ($dir.Name -eq $DefaultProfileName -or $dir.Name.StartsWith($ProfileFolderPrefix)) {
+                # Exclude system folders that do not contain valid user bookmarks
+                if ($dir.Name -ne "System Profile" -and $dir.Name -ne "Guest Profile") {
                     if (Test-Path (Join-Path $dir.FullName $BookmarksFileName)) {
                         $profiles += $dir.FullName
                         udf_WriteLog "INFO" "Found Chrome profile: $($dir.Name)"
