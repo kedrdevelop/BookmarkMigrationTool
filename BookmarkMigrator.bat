@@ -442,9 +442,6 @@ try {
         if ($successfulMerges -eq 0 -and $validProfilesToMerge.Count -gt 0) {
             throw "All valid Chrome profiles failed to merge. Check migration logs for details."
         }
-        
-        return $true
-    }
 
         # Update Timestamps
         $syncTimestamp = [string][long]([DateTime]::UtcNow.ToFileTimeUtc() / 10)
@@ -457,10 +454,6 @@ try {
             $edgeJson.roots.other | Add-Member -MemberType NoteProperty -Name "date_modified" -Value $syncTimestamp -Force
         }
 
-        # Remove Checksum (recreate object to remove property cleanly if needed, or just ignore if PS handles it)
-        # PSObject.Properties.Remove is tricky with ConvertFrom-Json objects sometimes.
-        # Easiest way: Select-Object -ExcludeProperty checksum on the root object? No, root is object.
-        # We can just not include it if we reconstruct, but modifying in place is easier.
         if ($edgeJson.PSObject.Properties.Match("checksum").Count -gt 0) {
             $edgeJson.PSObject.Properties.Remove("checksum")
         }
@@ -469,6 +462,8 @@ try {
         $utf8NoBom = New-Object System.Text.UTF8Encoding $false
         [System.IO.File]::WriteAllText($edgeFile, $mergedJsonString, $utf8NoBom)
         udf_WriteLog "INFO" "Merged bookmarks saved to Edge profile."
+        
+        return $true
     }
 
     function udf_InvokeRollback {
