@@ -364,16 +364,22 @@ try {
             udf_ResetBookmarkMetadata $profileFolder ([ref]$idCounter)
             
             # Prepend to Edge Bookmark Bar
-            if ($edgeJson.roots.bookmark_bar.children -eq $null) {
-                $edgeJson.roots.bookmark_bar.children = @()
+            if ($null -eq $edgeJson.roots.bookmark_bar.children) {
+                $edgeJson.roots.bookmark_bar | Add-Member -MemberType NoteProperty -Name "children" -Value @() -Force
             }
             $edgeJson.roots.bookmark_bar.children = @($profileFolder) + $edgeJson.roots.bookmark_bar.children
         }
 
         # Update Timestamps
         $syncTimestamp = [string][long]([DateTime]::UtcNow.ToFileTimeUtc() / 10)
-        $edgeJson.roots.bookmark_bar.date_modified = $syncTimestamp
-        $edgeJson.roots.other.date_modified = $syncTimestamp
+        
+        if ($null -ne $edgeJson.roots.bookmark_bar) {
+            $edgeJson.roots.bookmark_bar | Add-Member -MemberType NoteProperty -Name "date_modified" -Value $syncTimestamp -Force
+        }
+        
+        if ($null -ne $edgeJson.roots.other) {
+            $edgeJson.roots.other | Add-Member -MemberType NoteProperty -Name "date_modified" -Value $syncTimestamp -Force
+        }
 
         # Remove Checksum (recreate object to remove property cleanly if needed, or just ignore if PS handles it)
         # PSObject.Properties.Remove is tricky with ConvertFrom-Json objects sometimes.
