@@ -123,7 +123,8 @@ try {
     $BtnCloseApp = $window.FindName("BtnCloseApp")
 
     # --- Constants & State ---
-    $LogFileName = Join-Path $env:TEMP "migration_log.txt"
+    $LogFileBaseName = "migration_log.txt"
+    $LogFileName = Join-Path $env:TEMP $LogFileBaseName
     $BackupRootFolderName = "BookmarksBackup"
     $ChromeFolderName = "Chrome"
     $EdgeFolderName = "Edge"
@@ -233,7 +234,7 @@ try {
         New-Item -Path "$script:backupFolderPath\$ChromeFolderName" -ItemType Directory -Force | Out-Null
         New-Item -Path "$script:backupFolderPath\$EdgeFolderName" -ItemType Directory -Force | Out-Null
         
-        $newLogPath = Join-Path $script:backupFolderPath $LogFileName
+        $newLogPath = Join-Path $script:backupFolderPath $LogFileBaseName
         
         if (Test-Path -Path $LogFileName) {
             Move-Item -Path $LogFileName -Destination $newLogPath -Force -ErrorAction SilentlyContinue
