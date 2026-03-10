@@ -361,16 +361,15 @@ try {
         $idCounter = $InitialIdCounter
         $successfulMerges = 0
         $failedMerges = 0
+        $totalBookmarksFound = 0
+        $validProfilesToMerge = @()
 
+        # Pass 1: Count bookmarks in all profiles to see if we have anything to migrate
         foreach ($chromePath in $chromeProfiles) {
             try {
-                $profileName = Split-Path $chromePath -Leaf
-                udf_WriteLog "INFO" "Processing profile: $profileName"
-                
                 $chromeFile = Join-Path $chromePath $BookmarksFileName
                 $chromeJson = Get-Content $chromeFile -Raw | ConvertFrom-Json
                 
-                # Count bookmarks for logging
                 $bCount = 0
                 if ($chromeJson.roots) {
                     $keys = @("bookmark_bar", "other", "synced")
@@ -378,7 +377,28 @@ try {
                         if ($chromeJson.roots.$key) { udf_CountBookmarks $chromeJson.roots.$key ([ref]$bCount) }
                     }
                 }
-                udf_WriteLog "INFO" "Parsed $bCount bookmarks from $profileName"
+                
+                if ($bCount -gt 0) {
+                    $totalBookmarksFound += $bCount
+                    $validProfilesToMerge += [PSCustomObject]@{ Path = $chromePath; Json = $chromeJson; Name = (Split-Path $chromePath -Leaf); Count = $bCount }
+                } else {
+                    udf_WriteLog "INFO" "Skipped profile '$(Split-Path $chromePath -Leaf)' because it contains 0 bookmarks."
+                }
+            } catch {
+                udf_WriteLog "ERROR" "Failed to read profile '$($chromePath)': $($_.Exception.Message)"
+            }
+        }
+
+        if ($totalBookmarksFound -eq 0) {
+            udf_WriteLog "INFO" "No actual bookmarks found across any Chrome profile. Skipping Edge modification."
+            return $false
+        }
+
+        # Pass 2: Merge only profiles that actually have bookmarks
+        foreach ($profileData in $validProfilesToMerge) {
+            try {
+                udf_WriteLog "INFO" "Processing profile: $($profileData.Name)"
+                udf_WriteLog "INFO" "Parsed $($profileData.Count) bookmarks from $($profileData.Name)"
                 
                 # Create container folder
                 $profileFolder = [PSCustomObject]@{
@@ -386,13 +406,13 @@ try {
                     date_modified = ([string][long]([DateTime]::UtcNow.ToFileTimeUtc() / 10))
                     guid          = [Guid]::NewGuid().ToString()
                     id            = "0"
-                    name          = "$ChromeImportPrefix$profileName"
+                    name          = "$ChromeImportPrefix$($profileData.Name)"
                     type          = "folder"
                     children      = @()
                 }
 
                 # Extract roots
-                $roots = $chromeJson.roots
+                $roots = $profileData.Json.roots
                 if ($roots) {
                     $keys = @("bookmark_bar", "other", "synced")
                     foreach ($key in $keys) {
@@ -411,17 +431,20 @@ try {
                 $edgeJson.roots.bookmark_bar.children = @($profileFolder) + $edgeJson.roots.bookmark_bar.children
                 
                 $successfulMerges++
-                udf_WriteLog "INFO" "Successfully merged profile: $profileName"
+                udf_WriteLog "INFO" "Successfully merged profile: $($profileData.Name)"
             } catch {
                 $failedMerges++
-                udf_WriteLog "ERROR" "Failed to merge profile '$($chromePath)': $($_.Exception.Message)"
+                udf_WriteLog "ERROR" "Failed to merge profile '$($profileData.Path)': $($_.Exception.Message)"
             }
         }
         
         udf_WriteLog "INFO" "Migration summary: $successfulMerges successful, $failedMerges failed."
-        if ($successfulMerges -eq 0 -and $chromeProfiles.Count -gt 0) {
-            throw "All Chrome profiles failed to merge. Check migration logs for details."
+        if ($successfulMerges -eq 0 -and $validProfilesToMerge.Count -gt 0) {
+            throw "All valid Chrome profiles failed to merge. Check migration logs for details."
         }
+        
+        return $true
+    }
 
         # Update Timestamps
         $syncTimestamp = [string][long]([DateTime]::UtcNow.ToFileTimeUtc() / 10)
@@ -547,22 +570,32 @@ try {
             if ([string]::IsNullOrEmpty($edgeProfile)) { throw "No Edge profile found." }
             
             udf_BackupBookmarks $chromeProfiles $edgeProfile
-            udf_MergeBookmarks $chromeProfiles $edgeProfile
+            $hasBookmarks = udf_MergeBookmarks $chromeProfiles $edgeProfile
             
-            # Validation
-            $content = Get-Content (Join-Path $edgeProfile $BookmarksFileName) -Raw
-            if ($content -notmatch "$ChromeImportPrefix") { throw "Validation failed: Migrated folders not found." }
+            if ($hasBookmarks) {
+                # Validation
+                $content = Get-Content (Join-Path $edgeProfile $BookmarksFileName) -Raw
+                if ($content -notmatch "$ChromeImportPrefix") { throw "Validation failed: Migrated folders not found." }
+                
+                udf_WriteLog "INFO" "Migration completed successfully."
+                udf_UpdateStepper 3
+                
+                $DeMessageText.Text = "Migration erfolgreich!"
+                $EnMessageText.Text = "Migration successful!"
+                udf_SetMessageState "Success"
+                
+                $DeActionText.Text = "Hinweis: Der importierte Ordner erscheint möglicherweise am Ende Ihrer Lesezeichenleiste. Bitte öffnen Sie Edge und ziehen Sie ihn manuell an den Anfang."
+                $EnActionText.Text = "Note: The imported folder might appear at the end of your bookmarks bar. Please open Edge and drag it to the beginning manually."
+                $ActionRequiredContainer.Visibility = "Visible"
+            } else {
+                udf_WriteLog "INFO" "No bookmarks were found in any Chrome profile. Migration skipped."
+                udf_UpdateStepper 3
+                
+                $DeMessageText.Text = "Keine Lesezeichen in Chrome gefunden. Migration nicht erforderlich."
+                $EnMessageText.Text = "No bookmarks found in Chrome. Migration not required."
+                udf_SetMessageState "Success"
+            }
             
-            udf_WriteLog "INFO" "Migration completed successfully."
-            udf_UpdateStepper 3
-            
-            $DeMessageText.Text = "Migration erfolgreich!"
-            $EnMessageText.Text = "Migration successful!"
-            udf_SetMessageState "Success"
-            
-            $DeActionText.Text = "Hinweis: Der importierte Ordner erscheint möglicherweise am Ende Ihrer Lesezeichenleiste. Bitte öffnen Sie Edge und ziehen Sie ihn manuell an den Anfang."
-            $EnActionText.Text = "Note: The imported folder might appear at the end of your bookmarks bar. Please open Edge and drag it to the beginning manually."
-            $ActionRequiredContainer.Visibility = "Visible"
             $BtnCloseApp.Visibility = "Visible"
             
         } catch {
